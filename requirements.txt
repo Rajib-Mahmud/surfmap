@@ -1,0 +1,10 @@
+# ReconAuto — Python Dependencies
+# Usage: pip install -r requirements.txt
+
+# Core modules (built-in, no install needed)
+# urllib, json, re, subprocess, os, argparse, threading, socket
+
+# Optional — significantly improves results
+paramspider>=2.0
+arjun>=2.2.1
+linkfinder>=0.1
