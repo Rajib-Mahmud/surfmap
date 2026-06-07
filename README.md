@@ -67,7 +67,7 @@ ReconAuto:    domain → full attack surface map → prioritized findings → AI
 
 ```bash
 # 1. Clone
-git clone https://github.com/YOUR_USERNAME/reconauto
+git clone https://github.com/Rajib-Mahmud/surfmap
 cd reconauto
 
 # 2. Install Go tools (recommended for full power)
