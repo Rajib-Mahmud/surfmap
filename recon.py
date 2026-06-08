@@ -39,9 +39,8 @@ def tg_send_message(text):
         chunks = [text[i:i+4000] for i in range(0, len(text), 4000)]
         for chunk in chunks:
             payload = json.dumps({
-                "chat_id":    TELEGRAM_CHAT_ID,
-                "text":       chunk,
-                "parse_mode": "Markdown"
+                "chat_id": TELEGRAM_CHAT_ID,
+                "text":    chunk,
             }).encode()
             req = urllib.request.Request(
                 f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
@@ -103,40 +102,37 @@ def tg_notify_recon_done(domain, output_dir, stats):
 
     head("TELEGRAM NOTIFICATION")
 
-    # Summary message
-    secrets_count = stats.get("secrets", 0)
+    secrets_count  = stats.get("secrets", 0)
     takeover_count = stats.get("takeover", 0)
-    critical_icon = "🔴" if secrets_count or takeover_count else "🟢"
+    critical_icon  = "🔴" if secrets_count or takeover_count else "🟢"
 
-    msg = f"""
-{critical_icon} *ReconAuto — Scan Complete*
+    # Plain text — no Markdown to avoid parse errors
+    check_now = " ← CHECK NOW" if secrets_count else ""
+    tak_check = " ← CHECK NOW" if takeover_count else ""
 
-🎯 *Target:* `{domain}`
-⏰ *Time:* {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-📁 *Output:* `{output_dir}/`
-
-━━━━━━━━━━━━━━━━
-📊 *Results Summary*
-
-🔗 Total URLs: `{stats.get('urls', 0)}`
-🌐 Subdomains: `{stats.get('subdomains', 0)}`
-✅ Live Hosts: `{stats.get('live', 0)}`
-📡 API Endpoints: `{stats.get('api', 0)}`
-📄 JS Files: `{stats.get('js', 0)}`
-🔑 Parameters: `{stats.get('params', 0)}`
-🗂️ API Schemas: `{stats.get('schemas', 0)}`
-
-━━━━━━━━━━━━━━━━
-⚠️ *Priority Findings*
-
-🔴 JS Secrets: `{secrets_count}` {"← CHECK NOW" if secrets_count else ""}
-🔴 Takeover Candidates: `{takeover_count}` {"← CHECK NOW" if takeover_count else ""}
-🟡 Hidden Params: `{stats.get('hidden_params', 0)}`
-🟡 SSRF Candidates: `{stats.get('ssrf', 0)}`
-
-━━━━━━━━━━━━━━━━
-_by rajib\\_mahmud | ReconAuto_
-"""
+    msg = (
+        f"{critical_icon} ReconAuto — Scan Complete\n\n"
+        f"Target: {domain}\n"
+        f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+        f"Output: {output_dir}/\n\n"
+        f"━━━━━━━━━━━━━━━━\n"
+        f"Results Summary\n\n"
+        f"Total URLs:    {stats.get('urls', 0)}\n"
+        f"Subdomains:    {stats.get('subdomains', 0)}\n"
+        f"Live Hosts:    {stats.get('live', 0)}\n"
+        f"API Endpoints: {stats.get('api', 0)}\n"
+        f"JS Files:      {stats.get('js', 0)}\n"
+        f"Parameters:    {stats.get('params', 0)}\n"
+        f"API Schemas:   {stats.get('schemas', 0)}\n\n"
+        f"━━━━━━━━━━━━━━━━\n"
+        f"Priority Findings\n\n"
+        f"🔴 JS Secrets:          {secrets_count}{check_now}\n"
+        f"🔴 Takeover Candidates: {takeover_count}{tak_check}\n"
+        f"🟡 Hidden Params:       {stats.get('hidden_params', 0)}\n"
+        f"🟡 SSRF Candidates:     {stats.get('ssrf', 0)}\n\n"
+        f"━━━━━━━━━━━━━━━━\n"
+        f"by rajib_mahmud | SurfMap"
+    )
 
     info("Telegram-এ summary পাঠাচ্ছি...")
     if tg_send_message(msg):
@@ -491,6 +487,28 @@ def active_probe(base_url, output_dir, threads=20):
                 if status in [404, 410]: return None
                 if status == 200 and size < 10: return None
 
+                # Soft 404 / false positive detection
+                FALSE_POSITIVE_SIGNS = [
+                    "page not found",
+                    "404",
+                    "not found",
+                    "oops",
+                    "doesn't exist",
+                    "does not exist",
+                    "no longer available",
+                    "this page could not be found",
+                    "the page you requested",
+                    "nothing here",
+                    "went wrong",
+                    "error 404",
+                    "http 404",
+                    "page doesn't exist",
+                    "resource not found",
+                ]
+                content_lower = content.lower()
+                if status == 200 and any(sign in content_lower for sign in FALSE_POSITIVE_SIGNS):
+                    return None
+
                 result = {
                     "url": url, "status": status,
                     "size": size, "content_type": headers.get("Content-Type",""),
@@ -806,7 +824,7 @@ def run_dnsx(subdomains, output_dir):
                 return {"host": sub, "ips": ips}
             except: return None
 
-        with ThreadPoolExecutor(max_workers=50) as ex:
+        with ThreadPoolExecutor(max_workers=20) as ex:
             futures = {ex.submit(resolve_one, s): s for s in subdomains}
             for fut in as_completed(futures):
                 r = fut.result()
