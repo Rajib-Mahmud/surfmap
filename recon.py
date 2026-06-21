@@ -140,33 +140,88 @@ def tg_notify_recon_done(domain, output_dir, stats):
     else:
         warn("Summary send failed")
 
-    # Key files পাঠাও
-    files_to_send = [
-        ("REPORT.md",                "📋 Full Report — AI-তে দাও"),
-        ("all_urls.txt",             "🔗 All URLs"),
-        ("endpoints_api.txt",        "📡 API Endpoints"),
-        ("js_files.txt",             "📄 JS Files"),
-        ("parameters.json",          "🔑 Parameters (high-value flagged)"),
-        ("params_by_vulntype.json",  "⚠️ Params by Vuln Type"),
-        ("api_schema_endpoints.txt", "🗂️ API Schema Endpoints"),
-        ("jsluice_secrets.json",     "🔴 JS Secrets"),
-        ("takeover_candidates.txt",  "🔴 Takeover Candidates"),
-        ("arjun_hidden_params.json", "🟡 Hidden Parameters"),
+    # সব output files zip করে একটা file পাঠাও
+    info("Output zip করছি...")
+    import zipfile as _zipfile
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    zip_name  = f"surfmap_{domain}_{timestamp}.zip"
+    zip_path  = os.path.join(output_dir, zip_name)
+
+    files_to_zip = [
+        "REPORT.md",
+        "all_urls.txt",
+        "endpoints_api.txt",
+        "js_files.txt",
+        "parameters.txt",
+        "sensitive_paths.txt",
+        "parameters.json",
+        "params_by_vulntype.json",
+        "api_schema_endpoints.txt",
+        "api_schema.json",
+        "api_version_probe.txt",
+        "http_method_findings.json",
+        "jsluice_endpoints.txt",
+        "jsluice_secrets.json",
+        "arjun_hidden_params.json",
+        "takeover_candidates.txt",
+        "subdomains.txt",
+        "subdomains_resolved.txt",
+        "live_hosts.txt",
+        "active_probe.json",
+        "tech.json",
+        "gospider_urls.txt",
+        "gospider_forms.txt",
     ]
 
-    info("Files পাঠাচ্ছি...")
-    sent = 0
-    for filename, caption in files_to_send:
-        filepath = os.path.join(output_dir, filename)
-        if os.path.exists(filepath) and os.path.getsize(filepath) > 10:
-            if tg_send_file(filepath, caption):
-                info(f"  {G}✓{W} {filename}")
-                sent += 1
-                time.sleep(1)  # rate limit
-            else:
-                warn(f"  ✗ {filename}")
+    zip_ok = False
+    zipped = 0
+    try:
+        with _zipfile.ZipFile(zip_path, "w", _zipfile.ZIP_DEFLATED) as zf:
+            for fname in files_to_zip:
+                fpath = os.path.join(output_dir, fname)
+                if os.path.exists(fpath) and os.path.getsize(fpath) > 5:
+                    zf.write(fpath, fname)
+                    zipped += 1
+        zip_size = os.path.getsize(zip_path) / 1024
+        info(f"Zip: {zipped} files → {zip_size:.1f} KB")
+        zip_ok = True
+    except Exception as e:
+        warn(f"Zip create error: {e}")
 
-    info(f"Telegram: {sent} files sent")
+    if zip_ok:
+        caption = (
+            f"SurfMap Results — {domain}\n"
+            f"Files: {zipped} | Size: {zip_size:.1f}KB\n"
+            f"Secrets: {secrets_count} | Takeover: {takeover_count}"
+        )
+        try:
+            if tg_send_file(zip_path, caption):
+                info(f"{G}✓ Zip sent: {zip_name}{W}")
+            else:
+                warn("Zip send failed — check bot token/chat id")
+        except Exception as e:
+            warn(f"Zip send error: {e}")
+        finally:
+            try: os.remove(zip_path)
+            except: pass
+        # Fallback — individual files পাঠাও
+        warn("Fallback: individual files পাঠাচ্ছি...")
+        files_to_send = [
+            ("REPORT.md",               "📋 Full Report"),
+            ("all_urls.txt",            "🔗 All URLs"),
+            ("jsluice_secrets.json",    "🔴 JS Secrets"),
+            ("takeover_candidates.txt", "🔴 Takeover"),
+            ("params_by_vulntype.json", "⚠️ Vuln Params"),
+        ]
+        sent = 0
+        for filename, caption in files_to_send:
+            filepath = os.path.join(output_dir, filename)
+            if os.path.exists(filepath) and os.path.getsize(filepath) > 10:
+                if tg_send_file(filepath, caption):
+                    info(f"  {G}✓{W} {filename}")
+                    sent += 1
+                    time.sleep(1)
+        info(f"Fallback: {sent} files sent")
 
 def banner():
     print(f"""{C}{BOLD}
@@ -479,34 +534,52 @@ def active_probe(base_url, output_dir, threads=20):
             req = urllib.request.Request(url, headers={"User-Agent": rand_ua()})
             with urllib.request.urlopen(req, timeout=8) as r:
                 status = r.status
-                content = r.read(2000).decode("utf-8", errors="ignore")
+                content = r.read(8000).decode("utf-8", errors="ignore")
                 headers = dict(r.headers)
                 size = int(headers.get("Content-Length", len(content)))
 
-                # Skip common false positives
+                # Skip real 404/410
                 if status in [404, 410]: return None
                 if status == 200 and size < 10: return None
 
                 # Soft 404 / false positive detection
+                # Covers: Next.js, React, Laravel, Django, custom error pages
                 FALSE_POSITIVE_SIGNS = [
+                    # Generic
                     "page not found",
-                    "404",
-                    "not found",
-                    "oops",
-                    "doesn't exist",
-                    "does not exist",
-                    "no longer available",
                     "this page could not be found",
                     "the page you requested",
+                    "page doesn't exist",
+                    "page does not exist",
+                    "resource not found",
                     "nothing here",
+                    "no longer available",
                     "went wrong",
                     "error 404",
                     "http 404",
-                    "page doesn't exist",
-                    "resource not found",
+                    "oops",
+                    # Next.js specific
+                    "next_http_error_fallback;404",
+                    "next_http_error_fallback",
+                    "\"digest\":\"next_http_error",
+                    "$rx(\"b:0\",\"next_http_error",
+                    "notfound\":true",
+                    "dgst=",
+                    # React/SPA
+                    "\"statuscode\":404",
+                    "\"status\":404",
+                    "\"error\":\"not found\"",
+                    # Laravel
+                    "sorry, the page you are looking for",
+                    # Django
+                    "page not found (404)",
+                    # WordPress
+                    "page not found &laquo;",
                 ]
                 content_lower = content.lower()
-                if status == 200 and any(sign in content_lower for sign in FALSE_POSITIVE_SIGNS):
+                if status == 200 and any(
+                    sign.lower() in content_lower for sign in FALSE_POSITIVE_SIGNS
+                ):
                     return None
 
                 result = {
@@ -1441,8 +1514,8 @@ EXAMPLES:
         head("URL COLLECTION — SINGLE DOMAIN")
 
         if check_tool("gau"):
-            info("gau চালাচ্ছি...")
-            for l in run(f"gau {domain} --threads 5 2>/dev/null", 300).splitlines():
+            info("gau চালাচ্ছি (all providers)...")
+            for l in run(f"gau {domain} --threads 5 --providers wayback,commoncrawl,otx,urlscan 2>/dev/null", 300).splitlines():
                 if domain in l: all_urls.add(l.strip())
 
         if check_tool("waybackurls"):
@@ -1451,14 +1524,23 @@ EXAMPLES:
                 if domain in l: all_urls.add(l.strip())
 
         if check_tool("katana"):
-            info("katana চালাচ্ছি...")
-            for l in run(f"katana -u https://{domain} -silent -d 4 -jc 2>/dev/null", 300).splitlines():
+            info("katana চালাচ্ছি (depth 5, JS parsing)...")
+            for l in run(f"katana -u https://{domain} -silent -d 5 -jc -fx -xhr 2>/dev/null", 300).splitlines():
+                if domain in l: all_urls.add(l.strip())
+
+        if check_tool("hakrawler"):
+            info("hakrawler চালাচ্ছি...")
+            for l in run(f"echo https://{domain} | hakrawler -d 4 -subs 2>/dev/null", 180).splitlines():
                 if domain in l: all_urls.add(l.strip())
 
         # gospider
         if not args.no_gospider:
             gs_urls = run_gospider(f"https://{domain}", out, depth=3)
             all_urls.update(gs_urls)
+
+        # robots.txt + sitemap
+        info("robots.txt / sitemap.xml parse করছি...")
+        all_urls.update(fetch_robots_sitemap(domain))
 
         # More sources
         info("Wayback CDX আনছি...")
@@ -1537,17 +1619,31 @@ EXAMPLES:
         # URL collection
         head("URL COLLECTION — ALL SUBDOMAINS")
         if check_tool("gau"):
-            for l in run(f"gau --subs {domain} --threads 10 2>/dev/null", 400).splitlines():
+            info("gau চালাচ্ছি (all providers, all subdomains)...")
+            for l in run(f"gau --subs {domain} --threads 10 --providers wayback,commoncrawl,otx,urlscan 2>/dev/null", 400).splitlines():
                 all_urls.add(l.strip())
         if check_tool("katana") and live:
-            for l in run(f"katana -list {out}/live_hosts.txt -silent -d 3 -jc 2>/dev/null", 400).splitlines():
+            info("katana চালাচ্ছি (depth 5, XHR)...")
+            for l in run(f"katana -list {out}/live_hosts.txt -silent -d 5 -jc -fx -xhr 2>/dev/null", 400).splitlines():
                 all_urls.add(l.strip())
+
+        if check_tool("hakrawler") and live:
+            info("hakrawler চালাচ্ছি...")
+            for host in live[:10]:
+                for l in run(f"echo {host} | hakrawler -d 4 -subs 2>/dev/null", 120).splitlines():
+                    all_urls.add(l.strip())
 
         # gospider — all live hosts
         if not args.no_gospider and live:
             for host in live[:10]:
                 gs_urls = run_gospider(host, out, depth=2)
                 all_urls.update(gs_urls)
+
+        # robots.txt + sitemap for all live hosts
+        info("robots.txt / sitemap.xml parse করছি (all subdomains)...")
+        for host in live[:10]:
+            parsed_host = urllib.parse.urlparse(host).netloc
+            all_urls.update(fetch_robots_sitemap(parsed_host))
 
         info("Wayback CDX wildcard...")
         all_urls.update(fetch_wayback(domain, wildcard=True))
@@ -1557,6 +1653,12 @@ EXAMPLES:
         all_urls.update(fetch_otx(domain))
 
     all_urls = {u for u in all_urls if u}
+
+    # Smart deduplication
+    before = len(all_urls)
+    all_urls = smart_dedup(all_urls)
+    info(f"Smart dedup: {before} → {len(all_urls)} URLs")
+
     with open(os.path.join(out,"all_urls.txt"),"w") as f:
         f.write("\n".join(sorted(all_urls)))
     info(f"মোট URLs: {BOLD}{len(all_urls)}{W}")
@@ -1577,6 +1679,15 @@ EXAMPLES:
     if not args.no_schema:
         schema_findings, schema_endpoints = detect_api_schema(live, out)
         all_urls.update(schema_endpoints)
+
+    # API Version Probe (new)
+    head("API VERSION PROBE")
+    probe_target = live[0] if live else f"https://{domain}"
+    api_version_urls = probe_api_versions(probe_target, out)
+    all_urls.update(api_version_urls)
+
+    # HTTP Method Fuzzing (new)
+    fuzz_http_methods(live[:5], out)
 
     # arjun — hidden params
     hidden_params = {}
@@ -1788,6 +1899,274 @@ def _hackertarget(domain):
             s=l.split(",")[0].strip()
             if domain in s: subs.add(s)
     return subs
+
+# ─── robots.txt + sitemap.xml parser ─────────────────────────────────────────
+def fetch_robots_sitemap(domain):
+    """robots.txt এবং sitemap.xml থেকে URLs বের করো"""
+    urls = set()
+    targets_to_check = [
+        f"https://{domain}/robots.txt",
+        f"https://{domain}/sitemap.xml",
+        f"https://{domain}/sitemap_index.xml",
+        f"https://{domain}/sitemap.txt",
+        f"https://www.{domain}/robots.txt",
+        f"https://www.{domain}/sitemap.xml",
+    ]
+    for url in targets_to_check:
+        content, _, status = http_get(url, timeout=10)
+        if not content or status != 200: continue
+        # robots.txt
+        if "robots.txt" in url:
+            for line in content.splitlines():
+                line = line.strip()
+                if line.lower().startswith(("allow:", "disallow:", "sitemap:")):
+                    parts = line.split(":", 1)
+                    if len(parts) == 2:
+                        path = parts[1].strip()
+                        if path.startswith("http"):
+                            urls.add(path)
+                        elif path.startswith("/"):
+                            urls.add(f"https://{domain}{path}")
+        # sitemap.xml
+        elif "sitemap" in url:
+            # Extract URLs from sitemap
+            found = re.findall(r'<loc>(.*?)</loc>', content, re.IGNORECASE)
+            for u in found:
+                u = u.strip()
+                if domain in u: urls.add(u)
+            # Nested sitemaps
+            nested = re.findall(r'<sitemap>.*?<loc>(.*?)</loc>', content, re.DOTALL)
+            for n_url in nested[:5]:
+                n_content, _, n_status = http_get(n_url.strip(), timeout=10)
+                if n_content and n_status == 200:
+                    n_found = re.findall(r'<loc>(.*?)</loc>', n_content, re.IGNORECASE)
+                    for u in n_found:
+                        if domain in u: urls.add(u.strip())
+
+    if urls: info(f"robots/sitemap → {len(urls)} URLs")
+    return urls
+
+# ─── Response Baseline (Smart 200/404 detection) ──────────────────────────────
+def get_response_baseline(base_url):
+    """Random path দিয়ে baseline response নিই — fake 200 detect করতে"""
+    import hashlib
+    baselines = []
+    random_paths = [
+        f"/this-definitely-does-not-exist-{random.randint(100000,999999)}",
+        f"/xyzzy-{random.randint(100000,999999)}-nonexistent",
+        f"/fake-path-{random.randint(100000,999999)}.html",
+    ]
+    for path in random_paths:
+        try:
+            content, headers, status = http_get(base_url.rstrip("/") + path, timeout=8)
+            if content:
+                title_match = re.search(r'<title[^>]*>(.*?)</title>', content, re.I|re.S)
+                baselines.append({
+                    "status": status,
+                    "size":   len(content),
+                    "title":  title_match.group(1)[:100] if title_match else "",
+                    "hash":   hashlib.md5(content[:500].encode()).hexdigest(),
+                })
+        except Exception:
+            continue
+    return baselines
+
+def is_false_positive(content, status, size, baselines):
+    """Response baseline দিয়ে false positive check করো"""
+    import hashlib
+
+    # Real 404
+    if status in [404, 410]: return True
+    if not content: return True
+    if size < 10: return True
+
+    # Keyword-based soft 404
+    FALSE_POSITIVE_KEYWORDS = [
+        "page not found", "this page could not be found",
+        "next_http_error_fallback", "next_http_error_fallback;404",
+        "\"digest\":\"next_http_error", "notfound\":true",
+        "the page you requested", "page doesn't exist",
+        "page does not exist", "resource not found",
+        "nothing here", "no longer available",
+        "error 404", "http 404", "oops",
+        "sorry, the page", "dgst=",
+        "page not found (404)",
+    ]
+    content_lower = content.lower()
+    if any(kw in content_lower for kw in FALSE_POSITIVE_KEYWORDS):
+        return True
+
+    # Baseline comparison — same as random 404 page?
+    if baselines:
+        current_hash = hashlib.md5(content[:500].encode()).hexdigest()
+        for b in baselines:
+            # Same hash as baseline 404
+            if current_hash == b["hash"]: return True
+            # Same size as baseline 404 (±50 bytes)
+            if abs(size - b["size"]) < 50 and b["status"] == 200: return True
+
+    return False
+
+# ─── API Version Probe ────────────────────────────────────────────────────────
+def probe_api_versions(base_url, output_dir):
+    """API version endpoint গুলো probe করো"""
+    head("API VERSION PROBE")
+    found = []
+
+    API_PATHS = [
+        # Version paths
+        "/api", "/api/v1", "/api/v2", "/api/v3", "/api/v4", "/api/v5",
+        "/api/v1.0", "/api/v2.0", "/api/v3.0",
+        "/v1", "/v2", "/v3", "/v4",
+        "/v1/", "/v2/", "/v3/",
+        # Common API paths
+        "/api/users", "/api/user", "/api/auth", "/api/login",
+        "/api/register", "/api/products", "/api/orders",
+        "/api/admin", "/api/config", "/api/settings",
+        "/api/health", "/api/status", "/api/version",
+        "/api/me", "/api/profile", "/api/account",
+        "/api/search", "/api/upload", "/api/download",
+        # Mobile API (often less secure)
+        "/mobile/api", "/mobile/v1", "/app/api",
+        "/android/api", "/ios/api",
+        # Internal/Debug
+        "/internal/api", "/dev/api", "/debug/api",
+        "/api/internal", "/api/debug", "/api/test",
+        # GraphQL
+        "/graphql", "/api/graphql", "/gql",
+        # REST variations
+        "/rest", "/rest/v1", "/rest/v2",
+        "/services", "/service/api",
+        "/ws", "/websocket",
+    ]
+
+    # Get baseline first
+    baselines = get_response_baseline(base_url)
+    info(f"Baseline collected: {len(baselines)} samples")
+
+    def probe_api_one(path):
+        url = base_url.rstrip("/") + path
+        content, headers, status = http_get(url, timeout=8)
+        if not content: return None
+        size = len(content)
+        if is_false_positive(content, status, size, baselines): return None
+
+        ct = headers.get("Content-Type","").lower()
+        result = {"url": url, "status": status, "size": size, "content_type": ct, "interesting": []}
+
+        # JSON API response
+        if "json" in ct or content.strip().startswith("{") or content.strip().startswith("["):
+            result["interesting"].append("JSON_RESPONSE")
+            try:
+                data = json.loads(content)
+                result["json_keys"] = list(data.keys())[:10] if isinstance(data, dict) else []
+            except: pass
+
+        # Interesting content
+        if re.search(r'(?i)(api_key|token|secret|password|credential)', content):
+            result["interesting"].append("SENSITIVE_DATA")
+        if re.search(r'(?i)(swagger|openapi|graphql)', content):
+            result["interesting"].append("API_DOCS")
+        if re.search(r'(?i)(error|exception|traceback|stack)', content):
+            result["interesting"].append("ERROR_LEAK")
+
+        return result if (status == 200 or result["interesting"]) else None
+
+    info(f"{len(API_PATHS)} API paths probe করছি → {base_url}")
+    with ThreadPoolExecutor(max_workers=10) as ex:
+        futures = {ex.submit(probe_api_one, p): p for p in API_PATHS}
+        for fut in as_completed(futures):
+            r = fut.result()
+            if r:
+                found.append(r)
+                flags = f" {R}[{','.join(r['interesting'])}]{W}" if r['interesting'] else ""
+                info(f"  {G}{r['status']}{W} {r['url']} ({r['size']}b){flags}")
+
+    with open(os.path.join(output_dir, "api_version_probe.txt"), "w") as f:
+        f.write("\n".join([r["url"] for r in found]))
+
+    info(f"API version probe → {len(found)} found")
+    return [r["url"] for r in found]
+
+# ─── HTTP Method Fuzzer ───────────────────────────────────────────────────────
+def fuzz_http_methods(live_hosts, output_dir, sample=5):
+    """HTTP methods (GET/POST/PUT/DELETE/PATCH/OPTIONS) fuzz করো"""
+    head("HTTP METHOD FUZZING")
+    findings = []
+    METHODS = ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD", "TRACE"]
+
+    def test_methods(url):
+        results = []
+        get_content, _, get_status = http_get(url, timeout=8)
+        for method in METHODS:
+            if method == "GET": continue
+            try:
+                req = urllib.request.Request(url, method=method, headers={"User-Agent": rand_ua()})
+                with urllib.request.urlopen(req, timeout=8) as r:
+                    status = r.status
+                    content = r.read(1000).decode("utf-8", errors="ignore")
+                    # Interesting if different from GET
+                    if status != get_status:
+                        results.append({
+                            "url": url, "method": method,
+                            "status": status, "note": f"GET={get_status} vs {method}={status}"
+                        })
+                    # TRACE/TRACK — XST vulnerability
+                    if method in ["TRACE","TRACK"] and status == 200:
+                        results.append({
+                            "url": url, "method": method,
+                            "status": status, "note": "XST VULNERABILITY"
+                        })
+                    # OPTIONS — allowed methods disclosure
+                    if method == "OPTIONS":
+                        allowed = r.headers.get("Allow","")
+                        if allowed:
+                            results.append({
+                                "url": url, "method": "OPTIONS",
+                                "status": status, "note": f"Allowed: {allowed}"
+                            })
+            except: pass
+        return results
+
+    targets = live_hosts[:sample]
+    info(f"{len(targets)} host-এ HTTP method fuzzing করছি...")
+    for url in targets:
+        results = test_methods(url)
+        for r in results:
+            findings.append(r)
+            hit(f"[{r['method']}] {r['url']} — {r['note']}")
+
+    with open(os.path.join(output_dir, "http_method_findings.json"), "w") as f:
+        json.dump(findings, f, indent=2)
+
+    info(f"HTTP method fuzzing → {len(findings)} interesting findings")
+    return findings
+
+# ─── Smart URL Deduplication ──────────────────────────────────────────────────
+def smart_dedup(urls):
+    """Smart deduplication — same path different params একটাই রাখো"""
+    seen_paths = set()
+    deduped = set()
+    param_variants = {}
+
+    for url in urls:
+        try:
+            parsed = urllib.parse.urlparse(url)
+            path = parsed.netloc + parsed.path
+
+            # Keep one URL per unique path
+            if path not in seen_paths:
+                seen_paths.add(path)
+                deduped.add(url)
+            else:
+                # Keep parameterized version
+                if parsed.query and url not in deduped:
+                    # Replace old non-param version if exists
+                    deduped.add(url)
+
+        except: deduped.add(url)
+
+    return deduped
 
 if __name__ == "__main__":
     main()
