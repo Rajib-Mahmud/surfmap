@@ -6,7 +6,7 @@ Mode 1: শুধু domain
 Mode 2: domain + all subdomains
 """
 
-import subprocess, sys, os, json, re, argparse, time, random
+import subprocess, sys, os, json, re, argparse, time, random, shlex
 import urllib.request, urllib.parse, urllib.error
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -249,7 +249,17 @@ def run(cmd, timeout=120):
     try:
         r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
         return r.stdout.strip()
-    except: return ""
+    except Exception: return ""
+
+# ─── Safety helpers (shell injection guard) ───────────────────────────────────
+def q(s):
+    """যেকোনো untrusted value (enumerated subdomain/URL) shell-এ পাঠানোর আগে escape করে।"""
+    return shlex.quote(str(s))
+
+_DOMAIN_RE = re.compile(r'^[A-Za-z0-9.-]+$')
+def valid_domain(d):
+    """domain-এ শুধু বৈধ character (letter/number/dot/dash) allow করে; ; | $ ` ইত্যাদি block করে।"""
+    return bool(d) and len(d) <= 253 and _DOMAIN_RE.match(d) is not None
 
 UA_LIST = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
@@ -1105,7 +1115,7 @@ def run_gospider(target_url, output_dir, depth=3):
 
     info(f"gospider চালাচ্ছি → {target_url}")
     out = run(
-        f"gospider -s {target_url} -d {depth} -c 10 --js --sitemap --robots "
+        f"gospider -s {q(target_url)} -d {depth} -c 10 --js --sitemap --robots "
         f"--blacklist '.(png|jpg|gif|css|woff|ttf|svg)' -q 2>/dev/null",
         timeout=300
     )
@@ -1495,6 +1505,9 @@ EXAMPLES:
         return
 
     domain = args.domain.replace("https://","").replace("http://","").rstrip("/")
+    if not valid_domain(domain):
+        warn(f"Invalid domain: {domain!r} — শুধু letter, number, dot (.) আর dash (-) allow।")
+        return
     mode_banner(args.mode, domain)
 
     ts  = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -1599,7 +1612,7 @@ EXAMPLES:
             def chk(sub):
                 for s in ["https","http"]:
                     u=f"{s}://{sub}"
-                    r=run(f"curl -s -o /dev/null -w '%{{http_code}}' --connect-timeout 5 {u}")
+                    r=run(f"curl -s -o /dev/null -w '%{{http_code}}' --connect-timeout 5 {q(u)}")
                     if r and r not in ["000",""]: return u
             with ThreadPoolExecutor(20) as ex:
                 live = [r for r in ex.map(chk, targets) if r]
@@ -1630,7 +1643,7 @@ EXAMPLES:
         if check_tool("hakrawler") and live:
             info("hakrawler চালাচ্ছি...")
             for host in live[:10]:
-                for l in run(f"echo {host} | hakrawler -d 4 -subs 2>/dev/null", 120).splitlines():
+                for l in run(f"echo {q(host)} | hakrawler -d 4 -subs 2>/dev/null", 120).splitlines():
                     all_urls.add(l.strip())
 
         # gospider — all live hosts
